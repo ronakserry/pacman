@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Pac-Man</title>
+<style>
+:root{color-scheme:dark;--bg:#08091d;--wall:#2448c7;--yellow:#ffe600;--dot:#f4d9a5;--muted:#9ba6ce}
+*{box-sizing:border-box}
+body{margin:0;padding:12px;background:var(--bg);color:#fff;font:14px system-ui,sans-serif;text-align:center;user-select:none}
+#game{width:min(100%,390px);margin:auto}
+.top{display:flex;justify-content:space-between;align-items:center;margin:0 2px 8px;font-weight:700}
+.brand{color:var(--yellow);font-size:19px;letter-spacing:2px}
+.stats{display:flex;gap:14px;color:#fff}
+.stats span{color:var(--muted);font-size:11px;display:block;font-weight:500}
+canvas{display:block;width:100%;height:auto;aspect-ratio:19/21;background:#03040d;border:2px solid #182d87;border-radius:7px;touch-action:pan-y}
+#message{min-height:24px;margin:8px 0;color:var(--yellow);font-weight:700}
+.actions{display:flex;justify-content:center;gap:8px;margin:5px 0 9px}
+button{border:1px solid #5366ba;border-radius:8px;background:#17245b;color:white;font:700 14px system-ui;padding:9px 17px;touch-action:none}
+button:active{background:#344da5}
+#start{background:#d7bf00;color:#101020;border-color:#ffe600;min-width:112px}
+.pad{width:174px;margin:0 auto;display:grid;grid-template-columns:repeat(3,52px);grid-template-rows:42px 42px;gap:5px}
+.pad button{padding:0;font-size:19px}
+.pad .up{grid-column:2}
+.pad .left{grid-column:1;grid-row:2}
+.pad .down{grid-column:2;grid-row:2}
+.pad .right{grid-column:3;grid-row:2}
+.hint{margin-top:8px;color:var(--muted);font-size:11px}
+</style>
+</head>
+<body>
+<div id="game">
+ <div class="top">
+  <div class="brand">PAC-MAN</div>
+  <div class="stats">
+   <div><span>SCORE</span><b id="score">0</b></div>
+   <div><span>BEST</span><b id="best">0</b></div>
+   <div><span>LIVES</span><b id="lives">3</b></div>
+  </div>
+ </div>
+
+ <canvas id="board" width="380" height="420" aria-label="Pac-Man game board"></canvas>
+
+ <div id="message">Press START to play</div>
+
+ <div class="actions">
+  <button id="start">START</button>
+  <button id="pause">PAUSE</button>
+  <button id="restart">RESTART</button>
+ </div>
+
+ <div class="pad">
+  <button class="up" data-dir="up" aria-label="Up">▲</button>
+  <button class="left" data-dir="left" aria-label="Left">◀</button>
+  <button class="down" data-dir="down" aria-label="Down">▼</button>
+  <button class="right" data-dir="right" aria-label="Right">▶</button>
+ </div>
+
+ <div class="hint">Use the arrow buttons to move. Eat all dots and avoid the ghosts.</div>
+</div>
+
+<script>
+(()=>{
+'use strict';
+
+const canvas=document.getElementById('board');
+const ctx=canvas.getContext('2d');
+
+const scoreEl=document.getElementById('score');
+const bestEl=document.getElementById('best');
+const livesEl=document.getElementById('lives');
+const messageEl=document.getElementById('message');
+
+const W=19,H=21,S=20;
+
+const raw=[
+'###################',
+'#........#........#',
+'#.##.###.#.###.##.#',
+'#o##.###.#.###.##o#',
+'#.................#',
+'#.##.#.#####.#.##.#',
+'#....#...#...#....#',
+'####.###.#.###.####',
+'####.#.......#.####',
+'####.#.## ##.#.####',
+'..... ..# #.. .....',
+'####.#.#####.#.####',
+'####.#.......#.####',
+'####.#.#####.#.####',
+'#........#........#',
+'#.##.###.#.###.##.#',
+'#o.#.....P.....#.o#',
+'##.#.#.#####.#.#.##',
+'#....#...#...#....#',
+'#.######.#.######.#',
+'###################'
+];
+
+let map,player,ghosts;
+let score=0,lives=3,best=0;
+let running=false,paused=false,ended=false;
+let last=0,raf=0,remaining=0;
+
+const dirs={
+ up:{x:0,y:-1},
+ down:{x:0,y:1},
+ left:{x:-1,y:0},
+ right:{x:1,y:0}
+};
+
+function freshMap(){
+ map=raw.map(r=>r.split(''));
+ remaining=0;
+
+ for(let y=0;y<H;y++){
+  for(let x=0;x<W;x++){
+   if(map[y][x]==='P')map[y][x]=' ';
+   if(map[y][x]==='.'||map[y][x]==='o')remaining++;
+  }
+ }
+}
+
+function resetActors(){
+ player={
+  x:9,y:16,
+  dir:{x:0,y:0},
+  want:{x:0,y:0},
+  mouth:0
+ };
+
+ ghosts=[
+  {x:9,y:9,color:'#ff4141',dir:{x:0,y:-1}},
+  {x:8,y:10,color:'#ff9cde',dir:{x:1,y:0}},
+  {x:10,y:10,color:'#43e9ed',dir:{x:-1,y:0}},
+  {x:9,y:11,color:'#ffad45',dir:{x:0,y:1}}
+ ];
+}
+
+function wall(x,y){
+ return y<0||y>=H||x<0||x>=W||map[y][x]==='#';
+}
+
+function centered(a){
+ return Math.abs(a-Math.round(a))<.12;
+}
+
+function canMove(x,y,d){
+ return !wall(Math.round(x+d.x),Math.round(y+d.y));
+}
+
+function movePlayer(dt){
+ let p=player;
+
+ if(centered(p.x)&&centered(p.y)){
+  p.x=Math.round(p.x);
+  p.y=Math.round(p.y);
+
+  if(canMove(p.x,p.y,p.want)){
+   p.dir={...p.want};
+  }
+
+  if(!canMove(p.x,p.y,p.dir)){
+   p.dir={x:0,y:0};
+  }
+ }
+
+ p.x+=p.dir.x*dt*5.3;
+ p.y+=p.dir.y*dt*5.3;
+
+ if(p.x<0)p.x=W-1;
+ if(p.x>=W)p.x=0;
+
+ const x=Math.round(p.x);
+ const y=Math.round(p.y);
+
+ if(map[y]&&(map[y][x]==='.'||map[y][x]==='o')){
+  if(map[y][x]==='o')score+=50;
+  else score+=10;
+
+  map[y][x]=' ';
+  remaining--;
+  updateStats();
+ }
+
+ if(remaining<=0){
+  finish(true);
+ }
+}
+
+function moveGhost(g,dt){
+ if(centered(g.x)&&centered(g.y)){
+  g.x=Math.round(g.x);
+  g.y=Math.round(g.y);
+
+  let opts=Object.values(dirs).filter(d=>
+   canMove(g.x,g.y,d)&&
+   !(d.x===-g.dir.x&&d.y===-g.dir.y)
+  );
+
+  if(!opts.length){
+   opts=Object.values(dirs).filter(d=>canMove(g.x,g.y,d));
+  }
+
+  if(opts.length){
+   opts.sort((a,b)=>{
+    let da=Math.abs(g.x+a.x-player.x)+Math.abs(g.y+a.y-player.y);
+    let db=Math.abs(g.x+b.x-player.x)+Math.abs(g.y+b.y-player.y);
+    return da-db+(Math.random()-.5)*2.4;
+   });
+
+   g.dir=opts[0];
+  }
+ }
+
+ g.x+=g.dir.x*dt*2.45;
+ g.y+=g.dir.y*dt*2.45;
+
+ if(Math.abs(g.x-player.x)<.55&&Math.abs(g.y-player.y)<.55){
+  lives--;
+  updateStats();
+
+  if(lives<=0){
+   finish(false);
+  }else{
+   resetActors();
+   messageEl.textContent='Watch out!';
+  }
+ }
+}
+
+function updateStats(){
+ scoreEl.textContent=score;
+ livesEl.textContent=lives;
+ bestEl.textContent=best;
+}
+
+function draw(){
+ ctx.clearRect(0,0,380,420);
+ ctx.fillStyle='#03040d';
+ ctx.fillRect(0,0,380,420);
+
+ for(let y=0;y<H;y++){
+  for(let x=0;x<W;x++){
+   let c=map[y][x];
+   let cx=x*S+S/2;
+   let cy=y*S+S/2;
+
+   if(c==='#'){
+    ctx.fillStyle='#1735a0';
+    ctx.fillRect(x*S+1,y*S+1,S-2,S-2);
+
+    ctx.strokeStyle='#4268ff';
+    ctx.lineWidth=1;
+    ctx.strokeRect(x*S+3,y*S+3,S-6,S-6);
+
+   }else if(c==='.'||c==='o'){
+    ctx.beginPath();
+    ctx.fillStyle='#f5dca5';
+    ctx.arc(cx,cy,c==='o'?4:1.8,0,Math.PI*2);
+    ctx.fill();
+   }
+  }
+ }
+
+ if(player){
+  let a=Math.atan2(player.dir.y,player.dir.x);
+  let m=player.dir.x||player.dir.y?
+   (.18+Math.abs(Math.sin(player.mouth))*.22):.12;
+
+  ctx.fillStyle='#ffe600';
+  ctx.beginPath();
+  ctx.moveTo(player.x*S+10,player.y*S+10);
+
+  ctx.arc(
+   player.x*S+10,
+   player.y*S+10,
+   9,
+   a+m,
+   a+Math.PI*2-m
+  );
+
+  ctx.closePath();
+  ctx.fill();
+ }
+
+ ghosts.forEach(g=>{
+  let x=g.x*S+10;
+  let y=g.y*S+10;
+
+  ctx.fillStyle=g.color;
+  ctx.beginPath();
+  ctx.arc(x,y,8,Math.PI,0);
+  ctx.lineTo(x+8,y+8);
+  ctx.lineTo(x+4,y+5);
+  ctx.lineTo(x,y+8);
+  ctx.lineTo(x-4,y+5);
+  ctx.lineTo(x-8,y+8);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle='white';
+  ctx.beginPath();
+  ctx.arc(x-3,y-1,2.5,0,7);
+  ctx.arc(x+3,y-1,2.5,0,7);
+  ctx.fill();
+
+  ctx.fillStyle='#14235c';
+  ctx.beginPath();
+  ctx.arc(x-3,y-1,1.2,0,7);
+  ctx.arc(x+3,y-1,1.2,0,7);
+  ctx.fill();
+ });
+}
+
+function frame(t){
+ if(!running||paused)return;
+
+ let dt=Math.min((t-last)/1000,.05);
+ last=t;
+
+ player.mouth+=dt*12;
+ movePlayer(dt);
+
+ if(running){
+  ghosts.forEach(g=>moveGhost(g,dt));
+ }
+
+ draw();
+
+ if(running){
+  raf=requestAnimationFrame(frame);
+ }
+}
+
+function start(){
+ if(ended){
+  newGame();
+  return;
+ }
+
+ if(!running){
+  running=true;
+  paused=false;
+  messageEl.textContent='';
+  last=performance.now();
+  raf=requestAnimationFrame(frame);
+
+ }else if(paused){
+  paused=false;
+  last=performance.now();
+  messageEl.textContent='';
+  raf=requestAnimationFrame(frame);
+ }
+}
+
+function stop(){
+ if(running&&!paused){
+  paused=true;
+  cancelAnimationFrame(raf);
+  messageEl.textContent='Paused';
+ }
+}
+
+function finish(won){
+ running=false;
+ ended=true;
+ cancelAnimationFrame(raf);
+
+ messageEl.textContent=won?
+  'YOU WIN! Great job!':
+  'GAME OVER';
+
+ if(score>best){
+  best=score;
+
+  try{
+   localStorage.setItem('pacman-best',String(best));
+  }catch{}
+
+  bestEl.textContent=best;
+ }
+
+ draw();
+}
+
+function newGame(){
+ score=0;
+ lives=3;
+ ended=false;
+ paused=false;
+ running=false;
+
+ freshMap();
+ resetActors();
+ updateStats();
+
+ messageEl.textContent='Press START to play';
+ draw();
+}
+
+function setDir(name){
+ if(dirs[name]){
+  player.want={...dirs[name]};
+ }
+
+ if(!running&&!ended){
+  start();
+ }
+}
+
+document.querySelectorAll('[data-dir]').forEach(b=>{
+ b.addEventListener('click',()=>{
+  setDir(b.getAttribute('data-dir'));
+ });
+});
+
+document.getElementById('start').addEventListener('click',start);
+document.getElementById('pause').addEventListener('click',stop);
+document.getElementById('restart').addEventListener('click',newGame);
+
+try{
+ best=Number(localStorage.getItem('pacman-best'))||0;
+}catch{}
+
+bestEl.textContent=best;
+
+newGame();
+
+const tw=window.TelegramWidget;
+
+if(tw&&typeof tw.ready==='function'){
+ tw.ready();
+}
+
+})();
+</script>
+</body>
+</html>
